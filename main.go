@@ -35,6 +35,16 @@ type IssuesList struct {
 type Issue struct {
 	Id int `json:"id"`
 	Subject string `json:"subject"`
+	Project struct {
+		Id int `json:"id"`
+		Name string `json:"name"`
+	} `json:"project"`
+	Status struct {
+		Id int `json:"id"`
+		Name string `json:"name"`
+	} `json:"status"`
+	EstimatedHours float32 `json:"estimated_hours"`
+	SpentHours float32 `json:"spent_hours"`
 }
 
 func main() {
@@ -183,28 +193,23 @@ func handleIssuesCommand(command slack.SlashCommand, client *slack.Client) (erro
 	issuesTxt := ""
 
 	for ndx := range issues {
-		issuesTxt = issuesTxt + fmt.Sprintf("ID: %s, Subject: %s\n", strconv.Itoa(issues[ndx].Id), issues[ndx].Subject)
-	}
-	
-	attachment := slack.Attachment{}
-
-	attachment.Fields = []slack.AttachmentField{
-		{
-			Title: "Date",
-			Value: time.Now().String(),
-		}, {
-			Title: "Initiator",
-			Value: command.UserName,
-		},
+		link := generateLink(strconv.Itoa(issues[ndx].Id))
+		issuesTxt = issuesTxt + fmt.Sprintf("<%s|#%s: %s> (%.1fh/%.1fh) \n", link, strconv.Itoa(issues[ndx].Id), issues[ndx].Subject, issues[ndx].EstimatedHours, issues[ndx].SpentHours)
 	}
 
-	attachment.Text = fmt.Sprintf("Hello! %s\n Your issues:%s\n", command.UserName, issuesTxt)
-	_, _, err := client.PostMessage(command.ChannelID, slack.MsgOptionAttachments(attachment))
+	message := fmt.Sprintf("Issues assigned to <@%s> \n-----------\n%s", command.UserName, issuesTxt)
+	_, _, err := client.PostMessage(command.ChannelID, slack.MsgOptionText(message, false))
 	
 	if err != nil {
 		return fmt.Errorf("failed to post message: %w", err)
 	}
 	return nil
+}
+
+func generateLink(id string) string {
+	redmineUrl := os.Getenv("REDMINE_URL")
+
+	return fmt.Sprintf("%s/issues/%s", redmineUrl, id)
 }
 
 func handleActiveIssuesCommand(command slack.SlashCommand, client *slack.Client) (error) {
@@ -294,7 +299,6 @@ func usersIssues (userId int) []Issue {
 func callRedmineApi(method, resource string) (*json.Decoder, error) {
 	client := &http.Client{}
 	url := fmt.Sprintf("%s/%s", os.Getenv("REDMINE_URL"), resource)
-	fmt.Printf("REQUEST URL %s", url)
 	req, _ := http.NewRequest(method, url, nil)
 	req.Header.Set("X-Redmine-API-Key", os.Getenv("REDMINE_API_TOKEN"))
 	response, err := client.Do(req)
