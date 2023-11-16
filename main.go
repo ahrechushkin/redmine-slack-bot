@@ -8,6 +8,9 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"net/http"
+	"encoding/json"
+	"strconv"
 
 	"github.com/joho/godotenv"
 	"github.com/slack-go/slack"
@@ -15,12 +18,30 @@ import (
 	"github.com/slack-go/slack/slackevents"
 )
 
+type UsersList struct {
+	Users []User `json:"users"`
+}
+
+type User struct {
+	Id int `json:"id"`
+	Login string `json:"login"`
+	Mail  string `json:"mail"`
+}
+
+type IssuesList struct {
+	Issues []Issue `json:"issues"`
+}
+
+type Issue struct {
+	Id int `json:"id"`
+	Subject string `json:"subject"`
+}
+
 func main() {
 	godotenv.Load(".env")
 	
 	token := os.Getenv("SLACK_AUTH_TOKEN")
 	appToken := os.Getenv("SLACK_APP_TOKEN")
-	//channelID := os.Getenv("SLACK_CHANNEL_ID")
 	debug := os.Getenv("BOT_DEBUG_MODE") == "true"
 
 	client := slack.New(token, slack.OptionDebug(debug), slack.OptionAppLevelToken(appToken))
@@ -132,15 +153,67 @@ func handleEventMessage(event slackevents.EventsAPIEvent, client *slack.Client) 
 }
 
 func handleSlashCommand(command slack.SlashCommand, client *slack.Client) (interface{}, error) {
-
 	switch command.Command {
 	case "/help":
 		return nil, handleHelpCommand(command, client)
+	case "/issues":
+		return nil, handleIssuesCommand(command, client)
+	case "/active-issues":
+		return nil, handleActiveIssuesCommand(command, client)
+	case "/daily-report":
+		return nil, handleDailyReportCommand(command, client)
 	default:
 		return nil, handleUnexistingCommand(command, client)
 	}
 }
 
+func handleIssuesCommand(command slack.SlashCommand, client *slack.Client) (error) {
+	username := command.UserName
+	users := usersList()
+
+	userId := 0
+
+	for ndx := range users {
+		if users[ndx].Login == username {
+			userId = users[ndx].Id
+		}
+	}
+
+	issues := usersIssues(userId)
+	issuesTxt := ""
+
+	for ndx := range issues {
+		issuesTxt = issuesTxt + fmt.Sprintf("ID: %s, Subject: %s\n", strconv.Itoa(issues[ndx].Id), issues[ndx].Subject)
+	}
+	
+	attachment := slack.Attachment{}
+
+	attachment.Fields = []slack.AttachmentField{
+		{
+			Title: "Date",
+			Value: time.Now().String(),
+		}, {
+			Title: "Initiator",
+			Value: command.UserName,
+		},
+	}
+
+	attachment.Text = fmt.Sprintf("Hello! %s\n Your issues:%s\n", command.UserName, issuesTxt)
+	_, _, err := client.PostMessage(command.ChannelID, slack.MsgOptionAttachments(attachment))
+	
+	if err != nil {
+		return fmt.Errorf("failed to post message: %w", err)
+	}
+	return nil
+}
+
+func handleActiveIssuesCommand(command slack.SlashCommand, client *slack.Client) (error) {
+	return nil
+}
+
+func handleDailyReportCommand(command slack.SlashCommand, client *slack.Client) (error) {
+	return nil
+}
 func handleHelpCommand(command slack.SlashCommand, client *slack.Client) (error) {
 	attachment := slack.Attachment{}
 
@@ -183,4 +256,54 @@ func handleUnexistingCommand(command slack.SlashCommand, client *slack.Client) (
 		return fmt.Errorf("failed to post message: %w", err)
 	}
 	return nil
-} 
+}
+
+func usersList () []User {
+	usersListRaw, err := callRedmineApi("GET", "users.json")
+
+	if err != nil {
+		panic(err)
+	}
+	var usersList UsersList;
+	err = usersListRaw.Decode(&usersList)
+	
+	if err != nil {
+		panic(err)
+	}
+
+	return usersList.Users
+}
+
+func usersIssues (userId int) []Issue {
+	issuesListRaw, err := callRedmineApi("GET", fmt.Sprintf("issues.json?assigned_to_id=%s", strconv.Itoa(userId)))
+
+	if err != nil {
+		panic(err)
+	}
+
+	var issuesList IssuesList;
+	err = issuesListRaw.Decode(&issuesList)
+
+	if err != nil {
+		panic(err)
+	}
+
+	return issuesList.Issues
+}
+
+func callRedmineApi(method, resource string) (*json.Decoder, error) {
+	client := &http.Client{}
+	url := fmt.Sprintf("%s/%s", os.Getenv("REDMINE_URL"), resource)
+	fmt.Printf("REQUEST URL %s", url)
+	req, _ := http.NewRequest(method, url, nil)
+	req.Header.Set("X-Redmine-API-Key", os.Getenv("REDMINE_API_TOKEN"))
+	response, err := client.Do(req)
+
+	if err != nil {
+		panic(err)
+	}
+
+	decodedBody := json.NewDecoder(response.Body)
+
+	return decodedBody, err
+}
